@@ -112,7 +112,7 @@ def app_expected_files(domain, app):
     if app.startswith("legacy_app"):
         yield "/var/www/%s/index.html" % app
     yield "/etc/yunohost/apps/%s/settings.yml" % app
-    if "manifestv2" in app:
+    if "manifestv2" in app or "my_webapp" in app:
         yield "/etc/yunohost/apps/%s/manifest.toml" % app
     else:
         yield "/etc/yunohost/apps/%s/manifest.json" % app
@@ -330,7 +330,7 @@ def test_app_from_catalog():
 
     app_install(
         "my_webapp",
-        args=f"domain={main_domain}&path=/site&with_sftp=0&password=superpassword&is_public=1&with_mysql=0",
+        args=f"domain={main_domain}&path=/site&with_sftp=0&password=superpassword&init_main_permission=visitors&with_mysql=0&phpversion=none",
     )
     app_map_ = app_map(raw=True)
     assert main_domain in app_map_
@@ -339,7 +339,9 @@ def test_app_from_catalog():
     assert app_map_[main_domain]["/site"]["id"] == "my_webapp"
 
     assert app_is_installed(main_domain, "my_webapp")
-    assert app_is_exposed_on_http(main_domain, "/site", "Custom Web App")
+    assert app_is_exposed_on_http(
+        main_domain, "/site", "you have just installed My Webapp"
+    )
 
     # Try upgrade, should do nothing
     app_upgrade("my_webapp")
@@ -392,9 +394,9 @@ def test_legacy_app_install_private(secondary_domain):
     assert app_is_not_installed(secondary_domain, "legacy_app")
 
 
-def test_legacy_app_install_unknown_domain(mocker):
+def test_legacy_app_install_unknown_domain():
     with pytest.raises(YunohostError):
-        with message(mocker, "app_argument_invalid"):
+        with message("app_argument_invalid"):
             install_legacy_app("whatever.nope", "/legacy")
 
     assert app_is_not_installed("whatever.nope", "legacy_app")
@@ -421,12 +423,12 @@ def test_legacy_app_install_multiple_instances(secondary_domain):
     assert app_is_not_installed(secondary_domain, "legacy_app__2")
 
 
-def test_legacy_app_install_path_unavailable(mocker, secondary_domain):
+def test_legacy_app_install_path_unavailable(secondary_domain):
     # These will be removed in teardown
     install_legacy_app(secondary_domain, "/legacy")
 
     with pytest.raises(YunohostError):
-        with message(mocker, "app_location_unavailable"):
+        with message("app_location_unavailable"):
             install_legacy_app(secondary_domain, "/")
 
     assert app_is_installed(secondary_domain, "legacy_app")
@@ -442,19 +444,19 @@ def test_legacy_app_install_with_nginx_down(mocker, secondary_domain):
         install_legacy_app(secondary_domain, "/legacy")
 
 
-def test_legacy_app_failed_install(mocker, secondary_domain):
+def test_legacy_app_failed_install(secondary_domain):
     # This will conflict with the folder that the app
     # attempts to create, making the install fail
     mkdir("/var/www/legacy_app/", 0o750)
 
     with pytest.raises(YunohostError):
-        with message(mocker, "app_install_script_failed"):
+        with message("app_install_script_failed"):
             install_legacy_app(secondary_domain, "/legacy")
 
     assert app_is_not_installed(secondary_domain, "legacy_app")
 
 
-def test_legacy_app_failed_remove(mocker, secondary_domain):
+def test_legacy_app_failed_remove(secondary_domain):
     install_legacy_app(secondary_domain, "/legacy")
 
     # The remove script runs with set -eu and attempt to remove this
@@ -486,52 +488,52 @@ def test_full_domain_app_with_conflicts(mocker, secondary_domain):
         install_full_domain_app(secondary_domain)
 
 
-def test_systemfuckedup_during_app_install(mocker, secondary_domain):
+def test_systemfuckedup_during_app_install(secondary_domain):
     with pytest.raises(YunohostError):
-        with message(mocker, "app_install_failed"):
-            with message(mocker, "app_action_broke_system"):
+        with message("app_install_failed"):
+            with message("app_action_broke_system"):
                 install_break_yo_system(secondary_domain, breakwhat="install")
 
     assert app_is_not_installed(secondary_domain, "break_yo_system")
 
 
-def test_systemfuckedup_during_app_remove(mocker, secondary_domain):
+def test_systemfuckedup_during_app_remove(secondary_domain):
     install_break_yo_system(secondary_domain, breakwhat="remove")
 
     with pytest.raises(YunohostError):
-        with message(mocker, "app_action_broke_system"):
-            with message(mocker, "app_removed"):
+        with message("app_action_broke_system"):
+            with message("app_removed"):
                 app_remove("break_yo_system")
 
     assert app_is_not_installed(secondary_domain, "break_yo_system")
 
 
-def test_systemfuckedup_during_app_install_and_remove(mocker, secondary_domain):
+def test_systemfuckedup_during_app_install_and_remove(secondary_domain):
     with pytest.raises(YunohostError):
-        with message(mocker, "app_install_failed"):
-            with message(mocker, "app_action_broke_system"):
+        with message("app_install_failed"):
+            with message("app_action_broke_system"):
                 install_break_yo_system(secondary_domain, breakwhat="everything")
 
     assert app_is_not_installed(secondary_domain, "break_yo_system")
 
 
-def test_systemfuckedup_during_app_upgrade(mocker, secondary_domain):
+def test_systemfuckedup_during_app_upgrade(secondary_domain):
     install_break_yo_system(secondary_domain, breakwhat="upgrade")
 
     with pytest.raises(YunohostError):
-        with message(mocker, "app_action_broke_system"):
+        with message("app_action_broke_system"):
             app_upgrade(
                 "break_yo_system",
                 file=os.path.join(get_test_apps_dir(), "break_yo_system_ynh"),
             )
 
 
-def test_failed_multiple_app_upgrade(mocker, secondary_domain):
+def test_failed_multiple_app_upgrade(secondary_domain):
     install_legacy_app(secondary_domain, "/legacy")
     install_break_yo_system(secondary_domain, breakwhat="upgrade")
 
     with pytest.raises(YunohostError):
-        with message(mocker, "app_not_upgraded"):
+        with message("app_not_upgraded"):
             app_upgrade(
                 ["break_yo_system", "legacy_app"],
                 file={

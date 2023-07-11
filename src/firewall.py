@@ -331,7 +331,7 @@ def firewall_reload(skip_upnp=False):
         # Refresh port forwarding with UPnP
         firewall_upnp(no_refresh=False)
 
-    _run_service_command("reload", "fail2ban")
+    _run_service_command("restart", "fail2ban")
 
     if errors:
         logger.warning(m18n.n("firewall_rules_cmd_failed"))
@@ -402,7 +402,13 @@ def firewall_upnp(action="status", no_refresh=False):
 
         # Discover UPnP device(s)
         logger.debug("discovering UPnP devices...")
-        nb_dev = upnpc.discover()
+        try:
+            nb_dev = upnpc.discover()
+        except Exception:
+            logger.warning("Failed to find any UPnP device on the network")
+            nb_dev = -1
+            enabled = False
+
         logger.debug("found %d UPnP device(s)", int(nb_dev))
         if nb_dev < 1:
             logger.error(m18n.n("upnp_dev_not_found"))

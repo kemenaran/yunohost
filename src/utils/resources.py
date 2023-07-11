@@ -22,9 +22,10 @@ import shutil
 import random
 import tempfile
 import subprocess
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Union
 
 from moulinette import m18n
+from moulinette.utils.text import random_ascii
 from moulinette.utils.process import check_output
 from moulinette.utils.log import getActionLogger
 from moulinette.utils.filesystem import mkdir, chown, chmod, write_to_file
@@ -294,9 +295,9 @@ class SourcesResource(AppResource):
         armhf.sha256 = "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
 
         autoupdate.strategy = "latest_github_release"
-        autoupdate.asset.amd64 = ".*\.amd64.tar.gz"
-        autoupdate.asset.i386 = ".*\.386.tar.gz"
-        autoupdate.asset.armhf = ".*\.arm.tar.gz"
+        autoupdate.asset.amd64 = ".*\\.amd64.tar.gz"
+        autoupdate.asset.i386 = ".*\\.386.tar.gz"
+        autoupdate.asset.armhf = ".*\\.arm.tar.gz"
 
         [resources.sources.zblerg]
         url = "https://zblerg.com/download/zblerg"
@@ -571,7 +572,10 @@ class PermissionsResource(AppResource):
                 infos["url"] = _hydrate_app_template(infos["url"], settings)
 
             if infos.get("additional_urls"):
-                infos["additional_urls"] = [_hydrate_app_template(url) for url in infos["additional_urls"]]
+                infos["additional_urls"] = [
+                    _hydrate_app_template(url, settings)
+                    for url in infos["additional_urls"]
+                ]
 
     def provision_or_update(self, context: Dict = {}):
         from yunohost.permission import (
@@ -676,6 +680,7 @@ class SystemuserAppResource(AppResource):
     ##### Properties
     - `allow_ssh`: (default: False) Adds the user to the ssh.app group, allowing SSH connection via this user
     - `allow_sftp`: (default: False) Adds the user to the sftp.app group, allowing SFTP connection via this user
+    - `allow_email`: (default: False) Enable authentication on the mail stack for the system user and send mail using `__APP__@__DOMAIN__`. A `mail_pwd` setting is automatically defined (similar to `db_pwd` for databases). You can then configure the app to use `__APP__` and `__MAIL_PWD__` as SMTP credentials (with host 127.0.0.1). You can also tweak the user-part of the domain-part of the email used by manually defining a custom setting `mail_user` or `mail_domain`
     - `home`: (default: `/var/www/__APP__`) Defines the home property for this user. NB: unfortunately you can't simply use `__INSTALL_DIR__` or `__DATA_DIR__` for now
 
     ##### Provision/Update
@@ -699,6 +704,7 @@ class SystemuserAppResource(AppResource):
     default_properties: Dict[str, Any] = {
         "allow_ssh": False,
         "allow_sftp": False,
+        "allow_email": False,
         "home": "/var/www/__APP__",
     }
 
@@ -706,9 +712,13 @@ class SystemuserAppResource(AppResource):
 
     allow_ssh: bool = False
     allow_sftp: bool = False
+    allow_email: bool = False
     home: str = ""
 
     def provision_or_update(self, context: Dict = {}):
+
+        from yunohost.app import regen_mail_app_user_config_for_dovecot_and_postfix
+
         # FIXME : validate that no yunohost user exists with that name?
         # and/or that no system user exists during install ?
 
@@ -753,7 +763,25 @@ class SystemuserAppResource(AppResource):
                     f"sed -i 's@{raw_user_line_in_etc_passwd}@{new_raw_user_line_in_etc_passwd}@g' /etc/passwd"
                 )
 
+        # Update mail-related stuff
+        if self.allow_email:
+            mail_pwd = self.get_setting("mail_pwd")
+            if not mail_pwd:
+                mail_pwd = random_ascii(24)
+                self.set_setting("mail_pwd", mail_pwd)
+
+            regen_mail_app_user_config_for_dovecot_and_postfix()
+        else:
+            self.delete_setting("mail_pwd")
+            if os.system(f"grep --quiet ' {self.app}$' /etc/postfix/app_senders_login_maps") == 0 \
+                or os.system(f"grep --quiet '^{self.app}:' /etc/dovecot/app-senders-passwd") == 0:
+                regen_mail_app_user_config_for_dovecot_and_postfix()
+
+
     def deprovision(self, context: Dict = {}):
+
+        from yunohost.app import regen_mail_app_user_config_for_dovecot_and_postfix
+
         if os.system(f"getent passwd {self.app} >/dev/null 2>/dev/null") == 0:
             os.system(f"deluser {self.app} >/dev/null")
         if os.system(f"getent passwd {self.app} >/dev/null 2>/dev/null") == 0:
@@ -767,6 +795,11 @@ class SystemuserAppResource(AppResource):
             raise YunohostError(
                 f"Failed to delete system user for {self.app}", raw_msg=True
             )
+
+        self.delete_setting("mail_pwd")
+        if os.system(f"grep --quiet ' {self.app}$' /etc/postfix/app_senders_login_maps") == 0 \
+            or os.system(f"grep --quiet '^{self.app}:' /etc/dovecot/app-senders-passwd") == 0:
+            regen_mail_app_user_config_for_dovecot_and_postfix()
 
         # FIXME : better logging and error handling, add stdout/stderr from the deluser/delgroup commands...
 
@@ -1008,16 +1041,16 @@ class AptDependenciesAppResource(AppResource):
     ##### Example
     ```toml
     [resources.apt]
-    packages = "nyancat, lolcat, sl"
+    packages = ["nyancat", "lolcat", "sl"]
 
     # (this part is optional and corresponds to the legacy ynh_install_extra_app_dependencies helper)
     extras.yarn.repo = "deb https://dl.yarnpkg.com/debian/ stable main"
     extras.yarn.key = "https://dl.yarnpkg.com/debian/pubkey.gpg"
-    extras.yarn.packages = "yarn"
+    extras.yarn.packages = ["yarn"]
     ```
 
     ##### Properties
-    - `packages`: Comma-separated list of packages to be installed via `apt`
+    - `packages`: List of packages to be installed via `apt`
     - `packages_from_raw_bash`: A multi-line bash snippet (using triple quotes as open/close) which should echo additional packages to be installed. Meant to be used for packages to be conditionally installed depending on architecture, debian version, install questions, or other logic.
     - `extras`: A dict of (repo, key, packages) corresponding to "extra" repositories to fetch dependencies from
 
@@ -1041,19 +1074,13 @@ class AptDependenciesAppResource(AppResource):
 
     packages: List = []
     packages_from_raw_bash: str = ""
-    extras: Dict[str, Dict[str, str]] = {}
+    extras: Dict[str, Dict[str, Union[str, List]]] = {}
 
     def __init__(self, properties: Dict[str, Any], *args, **kwargs):
-        for key, values in properties.get("extras", {}).items():
-            if not all(
-                isinstance(values.get(k), str) for k in ["repo", "key", "packages"]
-            ):
-                raise YunohostError(
-                    "In apt resource in the manifest: 'extras' repo should have the keys 'repo', 'key' and 'packages' defined and be strings",
-                    raw_msg=True,
-                )
-
         super().__init__(properties, *args, **kwargs)
+
+        if isinstance(self.packages, str):
+            self.packages = [value.strip() for value in self.packages.split(",")]
 
         if self.packages_from_raw_bash:
             out, err = self.check_output_bash_snippet(self.packages_from_raw_bash)
@@ -1062,17 +1089,36 @@ class AptDependenciesAppResource(AppResource):
                     "Error while running apt resource packages_from_raw_bash snippet:"
                 )
                 logger.error(err)
-            self.packages += ", " + out.replace("\n", ", ")
+            self.packages += out.split("\n")
+
+        for key, values in self.extras.items():
+            if isinstance(values.get("packages"), str):
+                values["packages"] = [value.strip() for value in values["packages"].split(",")]  # type: ignore
+
+            if (
+                not isinstance(values.get("repo"), str)
+                or not isinstance(values.get("key"), str)
+                or not isinstance(values.get("packages"), list)
+            ):
+                raise YunohostError(
+                    "In apt resource in the manifest: 'extras' repo should have the keys 'repo', 'key' defined as strings and 'packages' defined as list",
+                    raw_msg=True,
+                )
 
     def provision_or_update(self, context: Dict = {}):
-        script = [f"ynh_install_app_dependencies {self.packages}"]
+        script = " ".join(["ynh_install_app_dependencies", *self.packages])
         for repo, values in self.extras.items():
-            script += [
-                f"ynh_install_extra_app_dependencies --repo='{values['repo']}' --key='{values['key']}' --package='{values['packages']}'"
-            ]
+            script += "\n" + " ".join(
+                [
+                    "ynh_install_extra_app_dependencies",
+                    f"--repo='{values['repo']}'",
+                    f"--key='{values['key']}'",
+                    f"--package='{' '.join(values['packages'])}'",
+                ]
+            )
             # FIXME : we're feeding the raw value of values['packages'] to the helper .. if we want to be consistent, may they should be comma-separated, though in the majority of cases, only a single package is installed from an extra repo..
 
-        self._run_script("provision_or_update", "\n".join(script))
+        self._run_script("provision_or_update", script)
 
     def deprovision(self, context: Dict = {}):
         self._run_script("deprovision", "ynh_remove_app_dependencies")
@@ -1163,7 +1209,7 @@ class PortsResource(AppResource):
             port_value = self.get_setting(setting_name)
             if not port_value and name != "main":
                 # Automigrate from legacy setting foobar_port (instead of port_foobar)
-                legacy_setting_name = "{name}_port"
+                legacy_setting_name = f"{name}_port"
                 port_value = self.get_setting(legacy_setting_name)
                 if port_value:
                     self.set_setting(setting_name, port_value)
@@ -1299,8 +1345,6 @@ class DatabaseAppResource(AppResource):
                 self.set_setting("db_pwd", db_pwd)
 
         if not db_pwd:
-            from moulinette.utils.text import random_ascii
-
             db_pwd = random_ascii(24)
             self.set_setting("db_pwd", db_pwd)
 
